@@ -2018,9 +2018,9 @@ function CncExportModal({
 export default function CuttingPlanOptimizer() {
   const isPreview = useMemo(() => isPreviewEnvironment(), []);
 
-  // Stav Beta zabezpečení
-  const [authStatus, setAuthStatus] = useState(isPreview ? 'unlocked' : 'checking');
-  const [betaKey, setBetaKey] = useState(() => (isPreview ? 'RIKVAN-SEF' : loadBetaKeyCookie()));
+  // Beta zámek je vypnutý – aplikace se otevírá rovnou bez hesla
+  const [authStatus, setAuthStatus] = useState('unlocked');
+  const [betaKey, setBetaKey] = useState('');
   const [betaInfo, setBetaInfo] = useState({
     keyName: isPreview ? 'NÁHLED' : '',
     permanent: true,
@@ -2173,15 +2173,7 @@ export default function CuttingPlanOptimizer() {
     }
   };
 
-  useEffect(() => {
-    if (isPreview) return;
-    const saved = loadBetaKeyCookie();
-    if (saved) {
-      verifyBetaKeyWithServer(saved, true);
-    } else {
-      setAuthStatus('locked');
-    }
-  }, [isPreview]);
+  // Automatická kontrola Beta klíče je vypnuta (přímý přístup bez hesla)
 
   const handleLogoutBeta = () => {
     clearBetaKeyCookie();
@@ -2399,25 +2391,18 @@ export default function CuttingPlanOptimizer() {
         const res = await fetch('/api/analyze', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'x-beta-key': betaKey || ''
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify(payload),
           signal: controller.signal
         });
-        if (res.status === 401) {
-          const errData = await res.json().catch(() => ({}));
-          clearBetaKeyCookie();
-          setAuthStatus('locked');
-          setAuthError(errData.error || 'Platnost vašeho beta klíče vypršela.');
-          throw new Error('AUTH_REVOKED');
-        }
         if (res.ok) {
           const data = await res.json();
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || data?.text || '';
           if (text) return text;
         }
-        throw new Error(`Chyba AI serveru (${res.status})`);
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Chyba AI serveru (${res.status})`);
       }
 
       const apiKey = '';
@@ -3572,18 +3557,6 @@ Pravidla:
             </div>
 
             <div className="flex items-center gap-2">
-              {!isPreview && betaInfo.keyName && (
-                <span className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-bold whitespace-nowrap">
-                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                  <span>{betaInfo.keyName}</span>
-                  {betaInfo.expiresAt && (
-                    <span className="text-[10px] font-semibold text-indigo-600">
-                      (do {betaInfo.expiresAt})
-                    </span>
-                  )}
-                </span>
-              )}
-
               <button
                 onClick={handleShare}
                 className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold text-xs transition whitespace-nowrap"
@@ -3591,182 +3564,168 @@ Pravidla:
                 <Share2 className="w-3.5 h-3.5 shrink-0" />
                 Sdílet
               </button>
-
-              {isPreview ? (
-                <button
-                  onClick={() => setAuthStatus('locked')}
-                  title="Náhled zamykací obrazovky Beta provozu"
-                  className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition whitespace-nowrap"
-                >
-                  <Lock className="w-3.5 h-3.5 shrink-0" />
-                  Zkusit zámek
-                </button>
-              ) : (
-                <button
-                  onClick={handleLogoutBeta}
-                  title="Odhlásit beta klíč"
-                  className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-700 border border-slate-200 text-slate-700 font-bold text-xs transition whitespace-nowrap"
-                >
-                  <LogOut className="w-3.5 h-3.5 shrink-0" />
-                  Odhlásit
-                </button>
-              )}
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <input
-              ref={imageInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => handleFileUpload(e, false)}
-            />
-            <input
-              ref={pdfInputRef}
-              type="file"
-              accept="application/pdf"
-              className="hidden"
-              onChange={(e) => handleFileUpload(e, true)}
-            />
-            <input
-              ref={excelInputRef}
-              type="file"
-              accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
-              className="hidden"
-              onChange={handleExcelUpload}
-            />
-            <input
-              ref={dxfInputRef}
-              type="file"
-              accept=".dxf,.dwg"
-              className="hidden"
-              onChange={handleDxfUpload}
-            />
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            onChange={(e) => handleFileUpload(e, false)}
+            className="hidden"
+          />
+          <input
+            ref={pdfInputRef}
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => handleFileUpload(e, true)}
+            className="hidden"
+          />
+          <input
+            ref={excelInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            onChange={handleExcelUpload}
+            className="hidden"
+          />
+          <input
+            ref={dxfInputRef}
+            type="file"
+            accept=".dxf,.dwg"
+            onChange={handleDxfUpload}
+            className="hidden"
+          />
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-              <button
-                disabled={isAnalyzing}
-                onClick={() => imageInputRef.current?.click()}
-                className="w-full h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-xs sm:text-sm hover:bg-emerald-100 transition disabled:opacity-60 whitespace-nowrap"
-              >
-                {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Camera className="w-4 h-4 shrink-0" />}
-                Z fotky
-              </button>
-
-              <button
-                disabled={isAnalyzing}
-                onClick={() => pdfInputRef.current?.click()}
-                className="w-full h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-xs sm:text-sm hover:bg-emerald-100 transition disabled:opacity-60 whitespace-nowrap"
-              >
-                {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <FileText className="w-4 h-4 shrink-0" />}
-                Z PDF
-              </button>
-
-              <button
-                disabled={isAnalyzing}
-                onClick={() => excelInputRef.current?.click()}
-                className="w-full h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-xs sm:text-sm hover:bg-emerald-100 transition disabled:opacity-60 whitespace-nowrap"
-              >
-                {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <FileSpreadsheet className="w-4 h-4 shrink-0" />}
-                Z Excelu
-              </button>
-
-              <button
-                disabled={isAnalyzing}
-                onClick={() => dxfInputRef.current?.click()}
-                className="w-full h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 font-bold text-xs sm:text-sm hover:bg-sky-100 transition disabled:opacity-60 whitespace-nowrap"
-              >
-                {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Compass className="w-4 h-4 shrink-0" />}
-                AutoCAD (DXF)
-              </button>
-            </div>
-
-            <p className="text-[11px] text-center text-slate-400 font-medium">
-              Podporované formáty: JPG / PNG • PDF • MS Excel (.xlsx, .xls, .csv) • AutoCAD (.dxf)
-            </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <button
+              type="button"
+              disabled={isAnalyzing}
+              onClick={() => imageInputRef.current?.click()}
+              className="h-11 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs sm:text-sm shadow-sm transition disabled:opacity-60 whitespace-nowrap"
+            >
+              <Camera className="w-4 h-4 shrink-0" />
+              Z fotky
+            </button>
+            <button
+              type="button"
+              disabled={isAnalyzing}
+              onClick={() => pdfInputRef.current?.click()}
+              className="h-11 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs sm:text-sm shadow-sm transition disabled:opacity-60 whitespace-nowrap"
+            >
+              <FileText className="w-4 h-4 shrink-0" />
+              Z PDF
+            </button>
+            <button
+              type="button"
+              disabled={isAnalyzing}
+              onClick={() => excelInputRef.current?.click()}
+              className="h-11 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs sm:text-sm shadow-sm transition disabled:opacity-60 whitespace-nowrap"
+            >
+              <FileSpreadsheet className="w-4 h-4 shrink-0" />
+              Z Excelu
+            </button>
+            <button
+              type="button"
+              disabled={isAnalyzing}
+              onClick={() => dxfInputRef.current?.click()}
+              className="h-11 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs sm:text-sm shadow-sm transition disabled:opacity-60 whitespace-nowrap"
+            >
+              <Compass className="w-4 h-4 text-amber-400 shrink-0" />
+              AutoCAD (DXF)
+            </button>
           </div>
 
-          {statusMessage && (
-            <div className="flex items-center gap-2 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2">
-              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-              {statusMessage}
+          {isAnalyzing && (
+            <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-bold flex items-center gap-2.5">
+              <Loader2 className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
+              <span>{statusMessage || 'Zpracovávám dokument...'}</span>
             </div>
           )}
 
           {errorMessage && (
-            <div className="flex items-start gap-2.5 text-xs font-semibold text-rose-800 bg-rose-50 border-l-4 border-rose-500 rounded-r-xl px-3 py-2.5">
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <div>
-                <div className="font-bold">Upozornění</div>
-                <div className="font-medium text-rose-700 mt-0.5">{errorMessage}</div>
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <span>{errorMessage}</span>
               </div>
+              <button
+                type="button"
+                onClick={() => setErrorMessage('')}
+                className="text-rose-500 hover:text-rose-700 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
 
           {successMessage && (
-            <div className="flex items-center gap-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              {successMessage}
+            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span>{successMessage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSuccessMessage('')}
+                className="text-emerald-600 hover:text-emerald-800 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
         </header>
 
+        {/* NASTAVENÍ ZAKÁZKY, PILY A CEN */}
         <section className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200 space-y-4">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-2 text-slate-800 font-extrabold text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm sm:text-base font-black text-slate-900 flex items-center gap-2">
               <SlidersHorizontal className="w-4 h-4 text-indigo-600" />
-              Nastavení zakázky, pily a barevného značení
-            </div>
-            <MaterialBadge gradeId={steelGrade} compact />
+              Nastavení zakázky, pily a cen
+            </h2>
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Parametry
+            </span>
           </div>
 
-          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-            <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-              Barevné značení materiálů (kliknutím zvolíte výchozí jakost pro nové kusy):
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {MATERIAL_GRADES.map((g) => {
-                const active = steelGrade === g.id;
-                return (
-                  <button
-                    key={g.id}
-                    type="button"
-                    onClick={() => setSteelGrade(g.id)}
-                    className={`w-full h-10 px-3 rounded-xl text-xs font-extrabold flex items-center justify-between gap-1.5 transition ${
-                      g.badgeClass
-                    } ${active ? 'ring-2 ring-offset-1 ring-slate-900 shadow-sm' : 'opacity-90 hover:opacity-100'}`}
-                  >
-                    <span className="flex items-center gap-1.5 min-w-0">
-                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${g.dotClass}`} />
-                      <span className="truncate">{g.shortLabel}</span>
-                    </span>
-                    <span className="text-[10px] font-bold opacity-85 shrink-0">{g.colorName}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-bold text-slate-600 mb-1">Číslo zakázky</label>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Číslo zakázky
+              </label>
               <input
                 type="text"
                 value={orderNumber}
                 onChange={(e) => setOrderNumber(e.target.value)}
                 placeholder="ZAK-2026"
-                className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 font-semibold text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white font-bold text-sm"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-600 mb-1">Výchozí profil</label>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Výchozí jakost oceli
+              </label>
+              <select
+                value={steelGrade}
+                onChange={(e) => setSteelGrade(e.target.value)}
+                className="w-full h-10 px-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white font-bold text-xs sm:text-sm"
+              >
+                {MATERIAL_GRADES.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Výchozí profil
+              </label>
               <select
                 value={defaultProfile}
                 onChange={(e) => setDefaultProfile(e.target.value)}
-                className="w-full h-10 px-3 rounded-xl border border-indigo-200 bg-indigo-50/50 text-indigo-950 font-bold text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full h-10 px-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white font-bold text-xs sm:text-sm"
               >
                 {PROFILE_CATEGORIES.map((cat) => (
                   <optgroup key={cat} label={cat}>
@@ -3781,8 +3740,8 @@ Pravidla:
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-            <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+            <div>
               <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
                 Prořez (mm)
               </label>
@@ -3792,61 +3751,48 @@ Pravidla:
                 step="0.5"
                 value={kerf}
                 onChange={(e) => setKerf(Number(e.target.value))}
-                className="w-full bg-white px-2 py-1.5 rounded-lg border border-slate-200 font-bold text-sm tabular-nums"
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
               />
             </div>
-
-            <div className="p-2.5 rounded-xl border border-amber-200 bg-amber-50/50">
-              <label className="block text-[10px] font-bold uppercase text-amber-900 mb-1">
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
                 Ořez čela (mm)
               </label>
               <input
                 type="number"
                 min="0"
-                step="5"
                 value={trimCut}
                 onChange={(e) => setTrimCut(Number(e.target.value))}
-                className="w-full bg-white px-2 py-1.5 rounded-lg border border-amber-300 font-extrabold text-sm text-amber-900 tabular-nums"
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
               />
             </div>
-
-            <div className="p-2.5 rounded-xl border border-indigo-200 bg-indigo-50/50">
-              <label
-                className="block text-[10px] font-bold uppercase text-indigo-900 mb-1"
-                title="Platí pro válcované ocelové profily (IPE, HEA, HEB, UPN, L, Pl). Trubky, kulatina, hranol, jekl, nerez a hliník mají 0 mm."
-              >
-                Přídavek profil
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  min="0"
-                  step="10"
-                  value={steelAllowance}
-                  onChange={(e) => setSteelAllowance(Number(e.target.value))}
-                  className="w-full bg-white pl-5 pr-2 py-1.5 rounded-lg border border-indigo-300 font-extrabold text-sm text-indigo-800 tabular-nums"
-                />
-                <span className="absolute left-2 top-1.5 text-xs font-extrabold text-indigo-500">+</span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-xl border border-amber-200 bg-amber-50/40">
-              <label className="block text-[10px] font-bold uppercase text-amber-800 mb-1">
-                Svěrák min.
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Přídavek tyče
               </label>
               <input
                 type="number"
                 min="0"
-                step="10"
-                value={clampMin}
-                onChange={(e) => setClampMin(Number(e.target.value))}
-                className="w-full bg-white px-2 py-1.5 rounded-lg border border-amber-200 font-bold text-sm text-amber-900 tabular-nums"
+                value={steelAllowance}
+                onChange={(e) => setSteelAllowance(Number(e.target.value))}
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
               />
             </div>
-
-            <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 col-span-2 sm:col-span-1">
+            <div>
               <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
-                Limit sklad
+                Svěrák (mm)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={clampMin}
+                onChange={(e) => setClampMin(Number(e.target.value))}
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
+              />
+            </div>
+            <div className="col-span-2 sm:col-span-1">
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Sklad od (mm)
               </label>
               <input
                 type="number"
@@ -3854,19 +3800,50 @@ Pravidla:
                 step="50"
                 value={stockLimit}
                 onChange={(e) => setStockLimit(Number(e.target.value))}
-                className="w-full bg-white px-2 py-1.5 rounded-lg border border-slate-200 font-bold text-sm text-emerald-700 tabular-nums"
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
               />
             </div>
           </div>
 
-          <div className="text-[11px] text-slate-500 bg-indigo-50/40 border border-indigo-100 rounded-xl px-3 py-2">
-            <strong>Hutní pravidlo přídavků:</strong> Válcované ocelové profily (<strong>IPE, HEA, HEB, UPN, L, Pl</strong>) v oceli se počítají s přídavkem <strong>+{steelAllowance} mm</strong> (tj. {6000 + (Number(steelAllowance) || 0)} / {12000 + (Number(steelAllowance) || 0)} / {15000 + (Number(steelAllowance) || 0)} mm). <strong>Trubky, kulatina, hranol (čtyřhran), jekl, nerez (Modrá) a hliník</strong> se vždy počítají v přesné délce bez přídavku (6000 / 12000 / 15000 mm).
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-stretch">
-            <div className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60">
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-slate-500 mb-1">
-                <SawBladeIcon className="w-3 h-3 text-indigo-600" />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 border-t border-slate-100">
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Cena 6 m (Kč/kg)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={price6m}
+                onChange={(e) => setPrice6m(Number(e.target.value))}
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Cena 12 m (Kč/kg)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={price12m}
+                onChange={(e) => setPrice12m(Number(e.target.value))}
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                Cena 15 m (Kč/kg)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={price15m}
+                onChange={(e) => setPrice15m(Number(e.target.value))}
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
                 Cena 1 řezu (Kč)
               </label>
               <input
@@ -3874,99 +3851,56 @@ Pravidla:
                 min="0"
                 value={cutPrice}
                 onChange={(e) => setCutPrice(Number(e.target.value))}
-                className="w-full bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 font-bold text-sm text-indigo-700 tabular-nums"
+                className="w-full h-9 px-2.5 rounded-lg border border-slate-200 bg-slate-50 font-bold text-sm tabular-nums"
               />
             </div>
+          </div>
 
-            <label className="p-3 rounded-xl border border-amber-200 bg-amber-50/30 flex items-center gap-2 cursor-pointer">
+          <div className="flex flex-wrap items-center gap-4 pt-1">
+            <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
               <input
                 type="checkbox"
                 checked={enforceClamp}
                 onChange={(e) => setEnforceClamp(e.target.checked)}
-                className="w-4 h-4 accent-amber-600 rounded shrink-0"
+                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
               />
-              <div>
-                <div className="text-xs font-extrabold text-slate-800">Hlídat svěrák v plánu</div>
-                <div className="text-[10px] text-slate-500">Rezervuje {clampMin} mm na konci tyče</div>
-              </div>
+              Hlídat svěrák v plánu
             </label>
-
-            <label className="p-3 rounded-xl border border-slate-200 bg-slate-50/60 flex items-center gap-2 cursor-pointer">
+            <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
               <input
                 type="checkbox"
                 checked={addReserve}
                 onChange={(e) => setAddReserve(e.target.checked)}
-                className="w-4 h-4 accent-indigo-600 rounded shrink-0"
+                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
               />
-              <div>
-                <div className="text-xs font-extrabold text-slate-800">Rezerva +1 nejdelší</div>
-                <div className="text-[10px] text-slate-500">Pojistný kus k zakázce</div>
-              </div>
+              Přidat rezervu (+1 nejdelší kus)
             </label>
-          </div>
-
-          <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/50">
-            <div className="text-[10px] font-bold uppercase text-slate-500 mb-2">
-              Nákupní cena materiálu (Kč / kg) podle délky tyče
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-lg border border-indigo-200 bg-white overflow-hidden">
-                <div className="bg-indigo-50 text-indigo-800 text-[10px] font-bold text-center py-0.5">
-                  Do 6m
-                </div>
-                <input
-                  type="number"
-                  value={price6m}
-                  onChange={(e) => setPrice6m(Number(e.target.value))}
-                  className="w-full text-center py-1.5 font-extrabold text-sm text-indigo-700 focus:outline-none tabular-nums"
-                />
-              </div>
-              <div className="rounded-lg border border-amber-200 bg-white overflow-hidden">
-                <div className="bg-amber-50 text-amber-800 text-[10px] font-bold text-center py-0.5">
-                  Do 12m
-                </div>
-                <input
-                  type="number"
-                  value={price12m}
-                  onChange={(e) => setPrice12m(Number(e.target.value))}
-                  className="w-full text-center py-1.5 font-extrabold text-sm text-amber-700 focus:outline-none tabular-nums"
-                />
-              </div>
-              <div className="rounded-lg border border-rose-200 bg-white overflow-hidden">
-                <div className="bg-rose-50 text-rose-800 text-[10px] font-bold text-center py-0.5">
-                  Do 15m
-                </div>
-                <input
-                  type="number"
-                  value={price15m}
-                  onChange={(e) => setPrice15m(Number(e.target.value))}
-                  className="w-full text-center py-1.5 font-extrabold text-sm text-rose-700 focus:outline-none tabular-nums"
-                />
-              </div>
-            </div>
           </div>
         </section>
 
-        <section className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200 space-y-3.5">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2 font-extrabold text-sm text-slate-900">
+        {/* POŽADOVANÉ KUSY K NAŘEZÁNÍ */}
+        <section className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm sm:text-base font-black text-slate-900 flex items-center gap-2">
               <Package className="w-4 h-4 text-indigo-600" />
               Požadované kusy ({items.length})
-            </div>
-            <div className="grid grid-cols-2 gap-2">
+            </h2>
+            <div className="flex items-center gap-2">
               <button
-                onClick={clearItems}
-                className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 hover:bg-slate-100 transition whitespace-nowrap"
+                type="button"
+                onClick={addItem}
+                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm transition"
               >
-                <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-                Vymazat
+                <Plus className="w-4 h-4" />
+                Přidat kus
               </button>
               <button
-                onClick={addItem}
-                className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-700 font-bold text-xs hover:bg-indigo-100 transition whitespace-nowrap"
+                type="button"
+                onClick={clearItems}
+                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition"
               >
-                <Plus className="w-3.5 h-3.5 shrink-0" />
-                Přidat kus
+                <RotateCcw className="w-3.5 h-3.5" />
+                Vymazat
               </button>
             </div>
           </div>
