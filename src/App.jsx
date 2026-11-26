@@ -193,11 +193,201 @@ const INITIAL_ITEMS = [
 const PRODUCTION_API_URL = 'https://rikvan-app.vercel.app/api/analyze';
 
 // ============================================================================
-// 2. POMOCNÉ FUNKCE (VÁHA, PROFILY, KOMPRESE FOTEK, EXCEL SHEETJS, DXF)
+// 2. POMOCNÉ FUNKCE (VÁHA, PROFILY, GEOMETRIE ÚHLŮ, PDF MOTOR, EXCEL, DXF)
 // ============================================================================
 
 function isLProfile(profileName) {
   return /^L\s*\d/i.test(String(profileName || '').trim());
+}
+
+function getAngleGeometry(angleNote, profile = '', lOrient = 'up-back', showHiddenEdge = false) {
+  const txt = String(angleNote || '').trim();
+  if (!txt) return null;
+
+  const isParallel = txt.includes('//');
+  const isBackParallel = txt.includes('\\\\');
+  const isTrapezoidA = txt.includes('/\\');
+  const isTrapezoidV = txt.includes('\\/');
+  const isSingleBackslash =
+    !isParallel && !isBackParallel && !isTrapezoidA && !isTrapezoidV && txt.includes('\\');
+
+  let topLeft = 6;
+  let botLeft = 6;
+  let topRight = 74;
+  let botRight = 64;
+
+  if (isParallel) {
+    topLeft = 14;
+    botLeft = 6;
+    topRight = 74;
+    botRight = 66;
+  } else if (isBackParallel) {
+    topLeft = 6;
+    botLeft = 14;
+    topRight = 66;
+    botRight = 74;
+  } else if (isTrapezoidA) {
+    topLeft = 14;
+    botLeft = 6;
+    topRight = 66;
+    botRight = 74;
+  } else if (isTrapezoidV) {
+    topLeft = 6;
+    botLeft = 14;
+    topRight = 74;
+    botRight = 66;
+  } else if (isSingleBackslash) {
+    topLeft = 6;
+    botLeft = 6;
+    topRight = 64;
+    botRight = 74;
+  }
+
+  const hasLeftCut = topLeft !== botLeft;
+  const hasRightCut = topRight !== botRight;
+  const isL = isLProfile(profile);
+
+  let innerEdge = null;
+  if (isL) {
+    const ori = lOrient || 'up-back';
+    const isUp = ori.startsWith('up');
+    const isBack = ori.endsWith('back');
+    const y = isBack ? 7 : 17;
+    const x1 = isBack ? Math.max(topLeft, 6) : Math.max(botLeft, 6);
+    const x2 = isBack ? Math.min(topRight, 72) : Math.min(botRight, 72);
+    innerEdge = { x1, y1: y, x2, y2: y, dashed: !isUp };
+  } else if (showHiddenEdge) {
+    innerEdge = {
+      x1: Math.max(topLeft, botLeft) + 2,
+      y1: 12,
+      x2: Math.min(topRight, botRight) - 2,
+      y2: 12,
+      dashed: true,
+    };
+  }
+
+  return {
+    topLeft,
+    botLeft,
+    topRight,
+    botRight,
+    hasLeftCut,
+    hasRightCut,
+    innerEdge,
+  };
+}
+
+function hexToRgb(hex) {
+  const clean = String(hex || '#94a3b8').replace('#', '');
+  if (clean.length !== 6) return [148, 163, 184];
+  return [
+    parseInt(clean.slice(0, 2), 16),
+    parseInt(clean.slice(2, 4), 16),
+    parseInt(clean.slice(4, 6), 16),
+  ];
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function stripDiacriticsFallback(str) {
+  return String(str ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/Ø/g, 'D')
+    .replace(/×/g, 'x')
+    .replace(/[–—]/g, '-')
+    .replace(/°/g, ' deg');
+}
+
+function loadExternalScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing && existing.dataset.loaded === '1') {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = () => {
+      script.dataset.loaded = '1';
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`Nepodařilo se načíst knihovnu (${src}).`));
+    document.head.appendChild(script);
+  });
+}
+
+let pdfEnginePromise = null;
+function loadPdfEngine() {
+  if (!pdfEnginePromise) {
+    pdfEnginePromise = (async () => {
+      if (!window.jspdf?.jsPDF) {
+        await loadExternalScript(
+          'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+        );
+      }
+      const jsPDF = window.jspdf?.jsPDF;
+      if (!jsPDF) {
+        throw new Error('Knihovna pro generování PDF se nenačetla.');
+      }
+      if (!jsPDF.API?.autoTable) {
+        await loadExternalScript(
+          'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.4/jspdf.plugin.autotable.min.js'
+        );
+      }
+
+      // Načtení fontu Roboto s kompletní českou diakritikou a znaky Ø, °, ×
+      let fontRegular = null;
+      let fontBold = null;
+
+      try {
+        if (!window.pdfMake?.vfs?.['Roboto-Regular.ttf']) {
+          await loadExternalScript(
+            'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js'
+          );
+        }
+        if (window.pdfMake?.vfs?.['Roboto-Regular.ttf']) {
+          fontRegular = window.pdfMake.vfs['Roboto-Regular.ttf'];
+          fontBold =
+            window.pdfMake.vfs['Roboto-Medium.ttf'] || window.pdfMake.vfs['Roboto-Regular.ttf'];
+        }
+      } catch {
+        // Zkusíme záložní zdroj fontu
+      }
+
+      if (!fontRegular) {
+        try {
+          const [regRes, boldRes] = await Promise.all([
+            fetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans.ttf'),
+            fetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans-Bold.ttf'),
+          ]);
+          if (regRes.ok) {
+            fontRegular = arrayBufferToBase64(await regRes.arrayBuffer());
+            fontBold = boldRes.ok
+              ? arrayBufferToBase64(await boldRes.arrayBuffer())
+              : fontRegular;
+          }
+        } catch {
+          // Offline nouzový režim bez vlastního TTF
+        }
+      }
+
+      return { jsPDF, fontRegular, fontBold };
+    })().catch((err) => {
+      pdfEnginePromise = null;
+      throw err;
+    });
+  }
+  return pdfEnginePromise;
 }
 
 function sanitizeNumericInput(raw, allowDecimal = false) {
@@ -256,7 +446,9 @@ function getProfileWeightPerM(profileName, materialId = 'S235JR') {
     const t = parseFloat(flatMatch[2]);
     return Number((w * t * 0.00785 * densityFactor).toFixed(2));
   }
-  const angleMatch = s.match(/^L\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+  const angleMatch = s.match(
+    /^L\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i
+  );
   if (angleMatch) {
     const a = parseFloat(angleMatch[1]);
     const b = parseFloat(angleMatch[2]);
@@ -284,7 +476,6 @@ function profileGetsAllowance(profileName, materialId) {
   return /^(IPE|HEA|HEB|HEM|UPN|UPE|L\s)/.test(p);
 }
 
-/** Zjistí bezpečnou absolutní URL pro AI API (opravuje chybu "Failed to parse URL from /api/analyze"). */
 function resolveAnalyzeEndpoint() {
   if (typeof window === 'undefined') {
     return { url: PRODUCTION_API_URL, isPreviewSandbox: true };
@@ -303,7 +494,6 @@ function resolveAnalyzeEndpoint() {
   return { url: `${origin}/api/analyze`, isPreviewSandbox: false };
 }
 
-/** Zmenší fotku z mobilu i PC pod limit Vercelu (cca 250–400 KB, ostré písmo). */
 function compressImageToBase64(file, maxDim = 1600, quality = 0.82) {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -359,30 +549,22 @@ function fileToBase64(file) {
   });
 }
 
-/** Dynamicky načte knihovnu SheetJS (XLSX) pro spolehlivé čtení .xlsx a .xls přímo v prohlížeči. */
 let sheetJsPromise = null;
 function loadSheetJs() {
   if (typeof window !== 'undefined' && window.XLSX) {
     return Promise.resolve(window.XLSX);
   }
   if (!sheetJsPromise) {
-    sheetJsPromise = new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      script.async = true;
-      script.onload = () => {
-        if (window.XLSX) resolve(window.XLSX);
-        else reject(new Error('Knihovna pro čtení Excelu se nenačetla správně.'));
-      };
-      script.onerror = () =>
-        reject(new Error('Nepodařilo se načíst čtečku Excelu (zkontrolujte připojení k internetu).'));
-      document.head.appendChild(script);
+    sheetJsPromise = loadExternalScript(
+      'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js'
+    ).then(() => {
+      if (window.XLSX) return window.XLSX;
+      throw new Error('Knihovna pro čtení Excelu se nenačetla správně.');
     });
   }
   return sheetJsPromise;
 }
 
-/** Přečte textový soubor (CSV/DXF) se správnou českou diakritikou (UTF-8 s fallbackem na Windows-1250). */
 async function readTextSmart(file) {
   const buf = await file.arrayBuffer();
   const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(buf);
@@ -422,7 +604,6 @@ function detectMaterialId(rawMat) {
   return 'S235JR';
 }
 
-/** Extrahuje položky z 2D pole řádků (Excel .xlsx/.xls i CSV/TSV). */
 function parseTabularRows(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
 
@@ -674,100 +855,40 @@ function MaterialBadge({ materialId, className = '' }) {
 }
 
 function AngleSvgPreview({ angleNote, showHiddenEdge, profile = '', lOrient = 'up-back' }) {
-  const txt = String(angleNote || '').trim();
-  if (!txt) return null;
-
-  const isParallel = txt.includes('//');
-  const isBackParallel = txt.includes('\\\\');
-  const isTrapezoidA = txt.includes('/\\');
-  const isTrapezoidV = txt.includes('\\/');
-  const isSingleBackslash = !isParallel && !isBackParallel && !isTrapezoidA && !isTrapezoidV && txt.includes('\\');
-
-  let topLeft = 6;
-  let botLeft = 6;
-  let topRight = 74;
-  let botRight = 64;
-
-  if (isParallel) {
-    topLeft = 14;
-    botLeft = 6;
-    topRight = 74;
-    botRight = 66;
-  } else if (isBackParallel) {
-    topLeft = 6;
-    botLeft = 14;
-    topRight = 66;
-    botRight = 74;
-  } else if (isTrapezoidA) {
-    topLeft = 14;
-    botLeft = 6;
-    topRight = 66;
-    botRight = 74;
-  } else if (isTrapezoidV) {
-    topLeft = 6;
-    botLeft = 14;
-    topRight = 74;
-    botRight = 66;
-  } else if (isSingleBackslash) {
-    topLeft = 6;
-    botLeft = 6;
-    topRight = 64;
-    botRight = 74;
-  }
-
-  const hasLeftCut = topLeft !== botLeft;
-  const hasRightCut = topRight !== botRight;
-
-  const isL = isLProfile(profile);
-  let innerEdge = null;
-
-  if (isL) {
-    const ori = lOrient || 'up-back';
-    const isUp = ori.startsWith('up');
-    const isBack = ori.endsWith('back');
-    const y = isBack ? 7 : 17;
-    const xStart = isBack ? Math.max(topLeft, 6) : Math.max(botLeft, 6);
-    const xEnd = isBack ? Math.min(topRight, 72) : Math.min(botRight, 72);
-
-    innerEdge = (
-      <line
-        x1={xStart}
-        y1={y}
-        x2={xEnd}
-        y2={y}
-        stroke={isUp ? '#0f172a' : '#475569'}
-        strokeWidth="1.3"
-        strokeDasharray={isUp ? undefined : '3.5 2.5'}
-      />
-    );
-  } else if (showHiddenEdge) {
-    innerEdge = (
-      <line
-        x1={Math.max(topLeft, botLeft) + 2}
-        y1="12"
-        x2={Math.min(topRight, botRight) - 2}
-        y2="12"
-        stroke="#475569"
-        strokeWidth="1.1"
-        strokeDasharray="3 2"
-      />
-    );
-  }
+  const geom = getAngleGeometry(angleNote, profile, lOrient, showHiddenEdge);
+  if (!geom) return null;
 
   return (
-    <svg viewBox="0 0 80 24" className="w-[68px] h-5 shrink-0" aria-label="Nákres řezu v půdorysu">
+    <svg viewBox="0 0 80 24" className="w-[64px] h-[18px] shrink-0" aria-label="Nákres řezu v půdorysu">
       <polygon
-        points={`${topLeft},3 ${topRight},3 ${botRight},21 ${botLeft},21`}
+        points={`${geom.topLeft},3 ${geom.topRight},3 ${geom.botRight},21 ${geom.botLeft},21`}
         fill="none"
         stroke="#0f172a"
         strokeWidth="1.3"
       />
-      {innerEdge}
-      {hasLeftCut && (
-        <line x1={topLeft} y1="3" x2={botLeft} y2="21" stroke="#dc2626" strokeWidth="2" />
+      {geom.innerEdge && (
+        <line
+          x1={geom.innerEdge.x1}
+          y1={geom.innerEdge.y1}
+          x2={geom.innerEdge.x2}
+          y2={geom.innerEdge.y2}
+          stroke={geom.innerEdge.dashed ? '#475569' : '#0f172a'}
+          strokeWidth={geom.innerEdge.dashed ? '1.15' : '1.3'}
+          strokeDasharray={geom.innerEdge.dashed ? '3.5 2.5' : undefined}
+        />
       )}
-      {hasRightCut && (
-        <line x1={topRight} y1="3" x2={botRight} y2="21" stroke="#dc2626" strokeWidth="2" />
+      {geom.hasLeftCut && (
+        <line x1={geom.topLeft} y1="3" x2={geom.botLeft} y2="21" stroke="#dc2626" strokeWidth="2" />
+      )}
+      {geom.hasRightCut && (
+        <line
+          x1={geom.topRight}
+          y1="3"
+          x2={geom.botRight}
+          y2="21"
+          stroke="#dc2626"
+          strokeWidth="2"
+        />
       )}
     </svg>
   );
@@ -781,6 +902,8 @@ export default function App() {
   const [view, setView] = useState('editor');
   const [previewTab, setPreviewTab] = useState('both');
   const [workshopRowMode, setWorkshopRowMode] = useState('grouped'); // 'grouped' | 'single'
+  const [printOrientation, setPrintOrientation] = useState('portrait'); // 'portrait' | 'landscape'
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isCncModalOpen, setIsCncModalOpen] = useState(false);
 
   // Nastavení zakázky, pily a cen
@@ -820,7 +943,7 @@ export default function App() {
 
   const showToast = (msg) => {
     setToastMsg(msg);
-    setTimeout(() => setToastMsg(''), 3000);
+    setTimeout(() => setToastMsg(''), 3200);
   };
 
   const kerfMm = toNum(kerfInput, 0);
@@ -951,7 +1074,7 @@ export default function App() {
     cutPrice,
   ]);
 
-  // Řádky pro úspornou dílenskou rozpisku (Sloučené vs. Po 1 ks)
+  // Řádky pro úspornou dílenskou rozpisku (Sloučené vs. Po 1 ks) + detekce prázdných sloupců
   const workshopRows = useMemo(() => {
     const flatRows = [];
     plan.groups.forEach((g) => {
@@ -1017,8 +1140,16 @@ export default function App() {
 
     const totalQty = flatRows.reduce((s, r) => s + r.ks, 0);
     const totalKg = flatRows.reduce((s, r) => s + r.rowKg, 0);
-    return { rows: flatRows, totalQty, totalKg };
+    const hasAnyDetail = flatRows.some((r) => Boolean(String(r.angleNote || '').trim()));
+    const hasAnyNote = flatRows.some((r) => Boolean(String(r.note || '').trim()));
+    return { rows: flatRows, totalQty, totalKg, hasAnyDetail, hasAnyNote };
   }, [plan.groups, workshopRowMode]);
+
+  const todayFormatted = new Intl.DateTimeFormat('cs-CZ', {
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric',
+  }).format(new Date());
 
   // ============================================================================
   // SPRÁVA POLOŽEK
@@ -1373,7 +1504,603 @@ export default function App() {
   };
 
   // ============================================================================
-  // EXPORTY, SDÍLENÍ A ODESLÁNÍ PDF
+  // GENEROVÁNÍ SKUTEČNÉHO VEKTOROVÉHO PDF (A4 NA VÝŠKU / ŠÍŘKU, ÚSPORA PAPÍRU)
+  // ============================================================================
+
+  const buildPdfDocument = async (tabToExport) => {
+    const { jsPDF, fontRegular, fontBold } = await loadPdfEngine();
+    const orientCode = printOrientation === 'landscape' ? 'l' : 'p';
+    const doc = new jsPDF({
+      orientation: orientCode,
+      unit: 'mm',
+      format: 'a4',
+      compress: true,
+    });
+
+    const hasCustomFont = Boolean(fontRegular);
+    const fontName = hasCustomFont ? 'RikvanFont' : 'helvetica';
+    const txt = (v) => (hasCustomFont ? String(v ?? '') : stripDiacriticsFallback(v));
+
+    if (hasCustomFont) {
+      doc.addFileToVFS('Rikvan-Regular.ttf', fontRegular);
+      doc.addFont('Rikvan-Regular.ttf', 'RikvanFont', 'normal');
+      doc.addFileToVFS('Rikvan-Bold.ttf', fontBold || fontRegular);
+      doc.addFont('Rikvan-Bold.ttf', 'RikvanFont', 'bold');
+      doc.setFont('RikvanFont', 'normal');
+    }
+
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const marginX = 7;
+    const marginTop = 7;
+    const marginBottom = 8;
+
+    const includePurchase = tabToExport === 'both' || tabToExport === 'purchase';
+    const includeWorkshop = tabToExport === 'both' || tabToExport === 'workshop';
+    const includeEconomy = tabToExport === 'both' || tabToExport === 'economy';
+
+    let hasStarted = false;
+
+    const drawSectionHeader = (label, rightText, subline = '') => {
+      if (hasStarted) doc.addPage();
+      hasStarted = true;
+
+      let y = marginTop + 4;
+      doc.setFont(fontName, 'bold');
+      doc.setTextColor(71, 85, 105);
+      doc.setFontSize(8.5);
+      doc.text(txt(label.toUpperCase()), marginX, y);
+
+      const labelW = doc.getTextWidth(txt(label.toUpperCase()));
+      doc.setTextColor(15, 23, 42);
+      doc.setFontSize(13.5);
+      doc.text(txt(orderNumber || 'ZAKÁZKA'), marginX + labelW + 3.5, y);
+
+      doc.setFont(fontName, 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(51, 65, 85);
+      doc.text(txt(rightText), pageW - marginX, y, { align: 'right' });
+
+      if (subline) {
+        y += 4.2;
+        doc.setFontSize(7.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(txt(subline), marginX, y);
+      }
+
+      y += 2;
+      doc.setDrawColor(15, 23, 42);
+      doc.setLineWidth(0.5);
+      doc.line(marginX, y, pageW - marginX, y);
+      return y + 2.5;
+    };
+
+    // 1) OBJEDNÁVKA MATERIÁLU
+    if (includePurchase) {
+      const startY = drawSectionHeader(
+        'Objednávka materiálu',
+        todayFormatted,
+        'Sumárum hutního materiálu k objednání u dodavatele'
+      );
+
+      const purchaseBody = plan.groups.map((g, idx) => {
+        const mat = MATERIAL_MAP[g.material] || MATERIALS[0];
+        return [
+          `${idx + 1}.`,
+          txt(g.profile),
+          txt(mat.shortLabel),
+          txt(
+            `${g.barCount} ks × ${g.nominalMeters} m ${
+              g.getsExtra ? `(+${g.effectiveAllowance} mm)` : '(přesná délka)'
+            }`
+          ),
+          txt(`${g.totalMeters.toFixed(1).replace('.', ',')} m`),
+          txt(`${formatKgCz(g.buyKg)} kg`),
+        ];
+      });
+
+      doc.autoTable({
+        startY,
+        margin: { top: marginTop, right: marginX, bottom: marginBottom, left: marginX },
+        theme: 'plain',
+        styles: {
+          font: fontName,
+          fontSize: 8.5,
+          textColor: [15, 23, 42],
+          cellPadding: { top: 1.6, right: 2, bottom: 1.6, left: 2 },
+          lineColor: [203, 213, 225],
+          lineWidth: 0.15,
+          valign: 'middle',
+        },
+        headStyles: {
+          font: fontName,
+          fontStyle: 'bold',
+          fontSize: 7.5,
+          textColor: [51, 65, 85],
+          fillColor: [255, 255, 255],
+          lineColor: [15, 23, 42],
+          lineWidth: { top: 0.35, bottom: 0.4, left: 0, right: 0 },
+        },
+        head: [['#', 'Profil', 'Jakost', 'Objednat', 'Celkem m', 'Hmotnost'].map(txt)],
+        body: purchaseBody,
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 9 },
+          1: { fontStyle: 'bold' },
+          2: { halign: 'center', fontStyle: 'bold', cellWidth: 22 },
+          3: { fontStyle: 'bold' },
+          4: { halign: 'right', cellWidth: 22 },
+          5: { halign: 'right', fontStyle: 'bold', cellWidth: 24 },
+        },
+        didDrawCell: (data) => {
+          if (data.section === 'body' && data.column.index === 2) {
+            const g = plan.groups[data.row.index];
+            const mat = MATERIAL_MAP[g?.material] || MATERIALS[0];
+            const [r, gr, b] = hexToRgb(mat.printUnderline);
+            const lineW = Math.min(13, data.cell.width - 4);
+            const cx = data.cell.x + data.cell.width / 2;
+            const ly = data.cell.y + data.cell.height - 1.1;
+            doc.setDrawColor(r, gr, b);
+            doc.setLineWidth(0.65);
+            doc.line(cx - lineW / 2, ly, cx + lineW / 2, ly);
+          }
+        },
+      });
+
+      const finalY = doc.lastAutoTable.finalY + 3;
+      doc.setDrawColor(15, 23, 42);
+      doc.setLineWidth(0.35);
+      doc.rect(marginX, finalY, pageW - marginX * 2, 8);
+      doc.setFont(fontName, 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(txt(`CELKEM K OBJEDNÁNÍ (${plan.groups.length} položek)`), marginX + 3, finalY + 5.2);
+      doc.text(
+        txt(`${plan.totalBars} ks tyčí • ${formatKgCz(plan.totalBuyKg)} kg`),
+        pageW - marginX - 3,
+        finalY + 5.2,
+        { align: 'right' }
+      );
+
+      if (supplierNote.trim()) {
+        doc.setFont(fontName, 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text(txt('POZNÁMKA PRO DODAVATELE:'), marginX, finalY + 13);
+        doc.setFont(fontName, 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(15, 23, 42);
+        const wrapped = doc.splitTextToSize(txt(supplierNote.trim()), pageW - marginX * 2);
+        doc.text(wrapped, marginX, finalY + 17.5);
+      }
+    }
+
+    // 2) ÚSPORNÁ DÍLENSKÁ ROZPISKA (100 % ŠÍŘKY, AUTOMATICKÉ SKRYTÍ PRÁZDNÝCH SLOUPCŮ)
+    if (includeWorkshop) {
+      const startY = drawSectionHeader('Rozpiska řezání', todayFormatted);
+      const { rows, totalQty, totalKg, hasAnyDetail, hasAnyNote } = workshopRows;
+
+      const columns = [
+        { key: 'tyc', label: 'TYČ' },
+        { key: 'vyk', label: 'VYK.' },
+        { key: 'pol', label: 'POL.' },
+        { key: 'ks', label: 'KS' },
+        { key: 'matLen', label: 'MATERIÁL – DÉLKA (MM)' },
+        { key: 'mat', label: 'MAT.' },
+      ];
+      if (hasAnyDetail) columns.push({ key: 'detail', label: 'DETAIL' });
+      if (hasAnyNote) columns.push({ key: 'note', label: 'POZNÁMKA' });
+      columns.push({ key: 'weight', label: 'HMOTNOST' });
+      columns.push({ key: 'ok', label: 'OK' });
+
+      const matColIdx = columns.findIndex((c) => c.key === 'mat');
+      const detailColIdx = columns.findIndex((c) => c.key === 'detail');
+      const okColIdx = columns.findIndex((c) => c.key === 'ok');
+      const weightColIdx = columns.findIndex((c) => c.key === 'weight');
+
+      const rowMetas = rows.map((r, idx) => {
+        const prev = idx > 0 ? rows[idx - 1] : null;
+        return {
+          row: r,
+          isNewMaterialGroup: Boolean(
+            prev && (prev.material !== r.material || prev.profile !== r.profile)
+          ),
+          isDone: Boolean(checkedCuts[r.rowKey]),
+        };
+      });
+
+      const bodyRows = rowMetas.map(({ row: r }) => {
+        const mat = MATERIAL_MAP[r.material] || MATERIALS[0];
+        return columns.map((col) => {
+          switch (col.key) {
+            case 'tyc':
+              return txt(r.tyc);
+            case 'vyk':
+              return txt(r.vyk);
+            case 'pol':
+              return txt(r.pol);
+            case 'ks':
+              return String(r.ks);
+            case 'matLen':
+              return txt(`${r.profile} – ${r.length}`);
+            case 'mat':
+              return txt(mat.shortLabel);
+            case 'detail':
+              return ''; // Kreslíme vektorově i s popiskem v didDrawCell
+            case 'note':
+              return txt(r.note || '');
+            case 'weight':
+              return txt(`${formatKgCz(r.rowKg)} kg`);
+            case 'ok':
+              return '';
+            default:
+              return '';
+          }
+        });
+      });
+
+      // Souhrnný řádek CELKEM vložíme přímo na konec tabulky (neopakuje se na každé stránce)
+      const middleSpan = 2 + (hasAnyDetail ? 1 : 0) + (hasAnyNote ? 1 : 0);
+      const totalRow = [
+        { content: txt('CELKEM'), colSpan: 3, styles: { halign: 'center', fontStyle: 'bold' } },
+        { content: String(totalQty), styles: { halign: 'center', fontStyle: 'bold' } },
+        {
+          content: txt('Délky = vnější rozměr L max'),
+          colSpan: middleSpan,
+          styles: { halign: 'left', fontStyle: 'normal', textColor: [71, 85, 105] },
+        },
+        {
+          content: txt(`${formatKgCz(totalKg)} kg`),
+          styles: { halign: 'right', fontStyle: 'bold' },
+        },
+        { content: '' },
+      ];
+      bodyRows.push(totalRow);
+
+      // Kompaktní rozměry pro 45–50 řádků na 1 jediný list A4 na výšku
+      const isCompact = rows.length > 26 && printOrientation === 'portrait';
+      const fontSize = isCompact ? 7.8 : printOrientation === 'portrait' ? 8.5 : 9;
+      const padV = isCompact ? 0.95 : 1.35;
+
+      const columnStyles = {};
+      columns.forEach((col, i) => {
+        if (col.key === 'tyc')
+          columnStyles[i] = { halign: 'center', fontStyle: 'bold', cellWidth: 11 };
+        else if (col.key === 'vyk')
+          columnStyles[i] = { halign: 'center', cellWidth: printOrientation === 'portrait' ? 14 : 18 };
+        else if (col.key === 'pol')
+          columnStyles[i] = { halign: 'center', fontStyle: 'bold', cellWidth: 10 };
+        else if (col.key === 'ks')
+          columnStyles[i] = { halign: 'center', fontStyle: 'bold', cellWidth: 9 };
+        else if (col.key === 'matLen')
+          columnStyles[i] = { halign: 'center', fontStyle: 'bold' };
+        else if (col.key === 'mat')
+          columnStyles[i] = { halign: 'center', fontStyle: 'bold', cellWidth: 19 };
+        else if (col.key === 'detail')
+          columnStyles[i] = {
+            halign: 'center',
+            cellWidth: printOrientation === 'portrait' ? 32 : 38,
+          };
+        else if (col.key === 'note')
+          columnStyles[i] = { halign: 'left' };
+        else if (col.key === 'weight')
+          columnStyles[i] = { halign: 'right', fontStyle: 'bold', cellWidth: 20 };
+        else if (col.key === 'ok')
+          columnStyles[i] = { halign: 'center', cellWidth: 9 };
+      });
+
+      const totalRowIndex = rows.length;
+
+      doc.autoTable({
+        startY,
+        margin: { top: marginTop, right: marginX, bottom: marginBottom, left: marginX },
+        tableWidth: 'auto',
+        theme: 'plain',
+        styles: {
+          font: fontName,
+          fontSize,
+          textColor: [15, 23, 42],
+          cellPadding: { top: padV, right: 1.5, bottom: padV, left: 1.5 },
+          lineColor: [226, 232, 240],
+          lineWidth: 0.15,
+          valign: 'middle',
+          overflow: 'linebreak',
+        },
+        headStyles: {
+          font: fontName,
+          fontStyle: 'bold',
+          fontSize: Math.max(6.8, fontSize - 0.8),
+          textColor: [51, 65, 85],
+          fillColor: [255, 255, 255],
+          halign: 'center',
+          lineColor: [15, 23, 42],
+          lineWidth: { top: 0.35, bottom: 0.4, left: 0.15, right: 0.15 },
+        },
+        head: [columns.map((c) => txt(c.label))],
+        body: bodyRows,
+        columnStyles,
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.row.index === totalRowIndex) {
+            data.cell.styles.lineColor = [15, 23, 42];
+            data.cell.styles.lineWidth = { top: 0.45, bottom: 0.45, left: 0.15, right: 0.15 };
+            data.cell.styles.cellPadding = { top: 1.8, right: 1.5, bottom: 1.8, left: 1.5 };
+          } else if (data.section === 'body' && data.row.index < rows.length) {
+            const meta = rowMetas[data.row.index];
+            if (meta?.isDone) {
+              data.cell.styles.textColor = [148, 163, 184];
+            }
+          }
+        },
+        didDrawCell: (data) => {
+          if (data.section !== 'body' || data.row.index >= rows.length) return;
+          const meta = rowMetas[data.row.index];
+          const r = meta.row;
+
+          // 1) Výraznější vodorovná čára při změně materiálu nebo profilu
+          if (meta.isNewMaterialGroup) {
+            doc.setDrawColor(15, 23, 42);
+            doc.setLineWidth(0.45);
+            doc.line(data.cell.x, data.cell.y, data.cell.x + data.cell.width, data.cell.y);
+          }
+
+          // 2) Jemné barevné podtržení jakosti (šetří inkoust)
+          if (data.column.index === matColIdx) {
+            const mat = MATERIAL_MAP[r.material] || MATERIALS[0];
+            const [cr, cg, cb] = hexToRgb(mat.printUnderline);
+            const ulW = Math.min(12.5, data.cell.width - 3);
+            const cx = data.cell.x + data.cell.width / 2;
+            const ly = data.cell.y + data.cell.height - 0.8;
+            doc.setDrawColor(cr, cg, cb);
+            doc.setLineWidth(0.55);
+            doc.line(cx - ulW / 2, ly, cx + ulW / 2, ly);
+          }
+
+          // 3) Vektorový nákres úhlu + popisek v buňce Detail
+          if (detailColIdx >= 0 && data.column.index === detailColIdx && r.angleNote) {
+            const geom = getAngleGeometry(r.angleNote, r.profile, r.lOrient, r.showHiddenEdge);
+            if (geom) {
+              const diagW = 13.5;
+              const diagH = Math.min(3.8, data.cell.height - 1.2);
+              const ox = data.cell.x + data.cell.width - diagW - 1.2;
+              const oy = data.cell.y + (data.cell.height - diagH) / 2;
+              const sx = diagW / 80;
+              const sy = diagH / 24;
+
+              // Text úhlu vlevo od nákresu
+              doc.setFont(fontName, 'bold');
+              doc.setFontSize(Math.max(6.5, fontSize - 0.8));
+              doc.setTextColor(15, 23, 42);
+              doc.text(txt(r.angleNote), ox - 1.2, data.cell.y + data.cell.height / 2 + 0.9, {
+                align: 'right',
+              });
+
+              const pTL = [ox + geom.topLeft * sx, oy + 3 * sy];
+              const pTR = [ox + geom.topRight * sx, oy + 3 * sy];
+              const pBR = [ox + geom.botRight * sx, oy + 21 * sy];
+              const pBL = [ox + geom.botLeft * sx, oy + 21 * sy];
+
+              // Obrys profilu
+              doc.setDrawColor(15, 23, 42);
+              doc.setLineWidth(0.24);
+              doc.setLineDashPattern([], 0);
+              doc.line(pTL[0], pTL[1], pTR[0], pTR[1]);
+              doc.line(pTR[0], pTR[1], pBR[0], pBR[1]);
+              doc.line(pBR[0], pBR[1], pBL[0], pBL[1]);
+              doc.line(pBL[0], pBL[1], pTL[0], pTL[1]);
+
+              // Vnitřní hrana (L-profil plná/čárkovaná nebo skrytá stojina)
+              if (geom.innerEdge) {
+                if (geom.innerEdge.dashed) {
+                  doc.setDrawColor(71, 85, 105);
+                  doc.setLineWidth(0.2);
+                  doc.setLineDashPattern([0.8, 0.6], 0);
+                } else {
+                  doc.setDrawColor(15, 23, 42);
+                  doc.setLineWidth(0.24);
+                  doc.setLineDashPattern([], 0);
+                }
+                doc.line(
+                  ox + geom.innerEdge.x1 * sx,
+                  oy + geom.innerEdge.y1 * sy,
+                  ox + geom.innerEdge.x2 * sx,
+                  oy + geom.innerEdge.y2 * sy
+                );
+                doc.setLineDashPattern([], 0);
+              }
+
+              // Červené řezané hrany (vlevo a/nebo vpravo)
+              doc.setDrawColor(220, 38, 38);
+              doc.setLineWidth(0.42);
+              if (geom.hasLeftCut) doc.line(pTL[0], pTL[1], pBL[0], pBL[1]);
+              if (geom.hasRightCut) doc.line(pTR[0], pTR[1], pBR[0], pBR[1]);
+            }
+          }
+
+          // 4) Čistý zaškrtávací čtvereček ve sloupci OK
+          if (data.column.index === okColIdx) {
+            const boxSize = Math.min(2.7, data.cell.height - 1.4);
+            const bx = data.cell.x + (data.cell.width - boxSize) / 2;
+            const by = data.cell.y + (data.cell.height - boxSize) / 2;
+            doc.setDrawColor(71, 85, 105);
+            doc.setLineWidth(0.22);
+            doc.setLineDashPattern([], 0);
+            doc.rect(bx, by, boxSize, boxSize);
+            if (meta.isDone) {
+              doc.setDrawColor(15, 23, 42);
+              doc.setLineWidth(0.35);
+              doc.line(bx + 0.5, by + boxSize * 0.55, bx + boxSize * 0.42, by + boxSize - 0.5);
+              doc.line(bx + boxSize * 0.42, by + boxSize - 0.5, bx + boxSize - 0.4, by + 0.5);
+            }
+          }
+
+          // Obnova defaultních čar
+          doc.setDrawColor(226, 232, 240);
+          doc.setLineWidth(0.15);
+        },
+      });
+    }
+
+    // 3) EKONOMICKÁ REKAPITULACE
+    if (includeEconomy) {
+      const startY = drawSectionHeader(
+        'Ekonomická rekapitulace',
+        todayFormatted,
+        `Ceny: 6 m = ${price6m} Kč/kg • 12 m = ${price12m} Kč/kg • 15 m = ${price15m} Kč/kg • 1 řez = ${cutPrice} Kč`
+      );
+
+      const ecoBody = plan.groups.map((g) => {
+        const mat = MATERIAL_MAP[g.material] || MATERIALS[0];
+        return [
+          txt(g.profile),
+          txt(mat.shortLabel),
+          txt(`${formatKgCz(g.buyKg)} kg`),
+          txt(`${g.pricePerKg} Kč`),
+          txt(`${Math.round(g.materialCost).toLocaleString('cs-CZ')} Kč`),
+        ];
+      });
+
+      doc.autoTable({
+        startY,
+        margin: { top: marginTop, right: marginX, bottom: marginBottom, left: marginX },
+        theme: 'plain',
+        styles: {
+          font: fontName,
+          fontSize: 8.5,
+          textColor: [15, 23, 42],
+          cellPadding: { top: 1.6, right: 2, bottom: 1.6, left: 2 },
+          lineColor: [203, 213, 225],
+          lineWidth: 0.15,
+        },
+        headStyles: {
+          font: fontName,
+          fontStyle: 'bold',
+          fontSize: 7.5,
+          textColor: [51, 65, 85],
+          lineColor: [15, 23, 42],
+          lineWidth: { top: 0.35, bottom: 0.4, left: 0, right: 0 },
+        },
+        head: [['Profil', 'Jakost', 'Nákup kg', 'Kč/kg', 'Cena materiálu'].map(txt)],
+        body: ecoBody,
+        columnStyles: {
+          0: { fontStyle: 'bold' },
+          1: { halign: 'center', fontStyle: 'bold', cellWidth: 22 },
+          2: { halign: 'right', cellWidth: 26 },
+          3: { halign: 'right', cellWidth: 22 },
+          4: { halign: 'right', fontStyle: 'bold', cellWidth: 32 },
+        },
+      });
+
+      const boxY = doc.lastAutoTable.finalY + 5;
+      const boxGap = 4;
+      const boxW = (pageW - marginX * 2 - boxGap * 2) / 3;
+      const boxes = [
+        {
+          label: 'MATERIÁL',
+          val: `${Math.round(plan.totalMaterialCost).toLocaleString('cs-CZ')} Kč`,
+          boldBorder: false,
+        },
+        {
+          label: `ŘEZÁNÍ (${plan.totalCutsCount}×)`,
+          val: `${Math.round(plan.totalCutCost).toLocaleString('cs-CZ')} Kč`,
+          boldBorder: false,
+        },
+        {
+          label: 'CELKEM ZAKÁZKA',
+          val: `${Math.round(plan.grandTotalCost).toLocaleString('cs-CZ')} Kč`,
+          boldBorder: true,
+        },
+      ];
+
+      boxes.forEach((b, i) => {
+        const bx = marginX + i * (boxW + boxGap);
+        doc.setDrawColor(b.boldBorder ? 15 : 148, b.boldBorder ? 23 : 163, b.boldBorder ? 42 : 184);
+        doc.setLineWidth(b.boldBorder ? 0.55 : 0.25);
+        doc.rect(bx, boxY, boxW, 14);
+        doc.setFont(fontName, 'bold');
+        doc.setFontSize(7);
+        doc.setTextColor(71, 85, 105);
+        doc.text(txt(b.label), bx + 3, boxY + 5);
+        doc.setFontSize(11);
+        doc.setTextColor(15, 23, 42);
+        doc.text(txt(b.val), bx + 3, boxY + 11.2);
+      });
+    }
+
+    // Číslování stránek v dolním rohu
+    const totalPages = doc.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      doc.setFont(fontName, 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(txt(`Strana ${p} / ${totalPages}`), pageW - marginX, pageH - 3.5, {
+        align: 'right',
+      });
+    }
+
+    return doc;
+  };
+
+  const getPdfFileName = (tab) => {
+    const safeOrder = String(orderNumber || 'RIKVAN')
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]+/g, '-');
+    const prefix =
+      tab === 'purchase'
+        ? 'Objednavka'
+        : tab === 'economy'
+        ? 'Ekonomika'
+        : tab === 'both'
+        ? 'Komplet'
+        : 'Rozpiska';
+    return `${prefix}_${safeOrder}.pdf`;
+  };
+
+  const handleExportPdf = async ({ mode = 'share', tab = previewTab } = {}) => {
+    if (plan.groups.length === 0) {
+      showToast('Nejdříve přidejte alespoň jednu položku.');
+      return;
+    }
+
+    setIsGeneratingPdf(true);
+    setErrorMsg('');
+
+    try {
+      const doc = await buildPdfDocument(tab);
+      const filename = getPdfFileName(tab);
+      const pdfBlob = doc.output('blob');
+      const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
+
+      if (mode === 'share' && typeof navigator !== 'undefined' && navigator.share) {
+        const canShareFiles =
+          typeof navigator.canShare === 'function' && navigator.canShare({ files: [pdfFile] });
+
+        if (canShareFiles) {
+          try {
+            await navigator.share({
+              files: [pdfFile],
+              title: `RIKVAN – ${filename.replace(/\.pdf$/i, '')}`,
+              text: `RIKVAN Řezný Plán (${orderNumber}) – přiložený PDF soubor.`,
+            });
+            showToast(`PDF soubor „${filename}“ připraven k odeslání.`);
+            return;
+          } catch (shareErr) {
+            if (shareErr?.name === 'AbortError') return;
+            // Pokud systém sdílení souborů selže, soubor bezpečně stáhneme
+          }
+        }
+      }
+
+      doc.save(filename);
+      showToast(`PDF soubor „${filename}“ byl stažen.`);
+    } catch (err) {
+      setErrorMsg(err?.message || 'Nepodařilo se vygenerovat PDF soubor.');
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
+  // ============================================================================
+  // EXPORTY, KOPÍROVÁNÍ A TISK
   // ============================================================================
 
   const copyPurchaseSummary = () => {
@@ -1477,42 +2204,16 @@ export default function App() {
     window.print();
   };
 
-  const handleShareOrPdf = async (sectionLabel = 'Dílenský plán') => {
-    const summaryText = [
-      `RIKVAN Řezný Plán – ${sectionLabel} (${orderNumber})`,
-      `Tyčí k nákupu: ${plan.totalBars} ks (${plan.totalBuyKg.toFixed(1)} kg)`,
-      `Celkem řezů: ${plan.totalCutsCount}×`,
-      `Odhad nákladů: ${Math.round(plan.grandTotalCost).toLocaleString('cs-CZ')} Kč`,
-    ].join('\n');
-
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: `RIKVAN – ${sectionLabel} (${orderNumber})`,
-          text: summaryText,
-        });
-        return;
-      } catch {
-        // Uživatel sdílení zavřel – otevře se tisk / uložení do PDF
-      }
-    }
-    handlePrintA4();
-  };
-
-  const todayFormatted = new Intl.DateTimeFormat('cs-CZ', {
-    day: 'numeric',
-    month: 'numeric',
-    year: 'numeric',
-  }).format(new Date());
-
   // ============================================================================
-  // 6. NÁHLED TISKU A4 (ÚSPORNÁ DÍLENSKÁ ROZPISKA + OPTIMALIZOVANÉ TISKOVÉ CSS)
+  // 6. NÁHLED TISKU A4 (PLNÁ ŠÍŘKA STRÁNKY, SKRYTÍ PRÁZDNÝCH SLOUPCŮ, PDF SOUBOR)
   // ============================================================================
 
   if (view === 'print') {
     const showPurchase = previewTab === 'both' || previewTab === 'purchase';
     const showWorkshop = previewTab === 'both' || previewTab === 'workshop';
     const showEconomy = previewTab === 'both' || previewTab === 'economy';
+    const { hasAnyDetail, hasAnyNote } = workshopRows;
+    const footerMiddleColSpan = 2 + (hasAnyDetail ? 1 : 0) + (hasAnyNote ? 1 : 0);
 
     const pdfBtnColor =
       previewTab === 'purchase'
@@ -1522,26 +2223,46 @@ export default function App() {
         : 'bg-indigo-600 hover:bg-indigo-700 text-white';
 
     return (
-      <div className="min-h-screen bg-slate-100 text-slate-900 pb-12 print:bg-white print:pb-0">
-        {/* Pravidla pro čistý, úsporný tisk na A4 (na šířku pro 10 sloupců rozpisky) */}
+      <div className="print-root min-h-screen bg-slate-100 text-slate-900 pb-12 print:min-h-0 print:h-auto print:bg-white print:pb-0">
+        {/* Pravidla pro úsporný tisk přes celou stránku A4 bez prázdných listů */}
         <style>{`
           @media print {
             @page {
-              size: A4 landscape;
-              margin: 10mm;
+              size: A4 ${printOrientation};
+              margin: 6mm;
             }
             html, body {
               background: #ffffff !important;
               margin: 0 !important;
               padding: 0 !important;
+              width: 100% !important;
+              height: auto !important;
+              min-height: 0 !important;
               -webkit-print-color-adjust: exact !important;
               print-color-adjust: exact !important;
+            }
+            .print-root {
+              min-height: 0 !important;
+              height: auto !important;
+              padding: 0 !important;
+              margin: 0 !important;
+              background: #ffffff !important;
+            }
+            table.print-workshop-table {
+              width: 100% !important;
+              table-layout: auto !important;
+              font-size: ${printOrientation === 'portrait' ? '9.5pt' : '10.5pt'} !important;
+              line-height: 1.15 !important;
+            }
+            table.print-workshop-table th,
+            table.print-workshop-table td {
+              padding: 2.5px 4px !important;
             }
             thead {
               display: table-header-group;
             }
             tfoot {
-              display: table-footer-group;
+              display: table-row-group;
             }
             tr {
               break-inside: avoid;
@@ -1553,6 +2274,13 @@ export default function App() {
             }
           }
         `}</style>
+
+        {toastMsg && (
+          <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-lg text-xs font-bold flex items-center gap-2 print:hidden">
+            <Check className="w-4 h-4 text-emerald-400" />
+            {toastMsg}
+          </div>
+        )}
 
         {/* Kompaktní horní lišta (při tisku skrytá) */}
         <div className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-3 py-2 print:hidden shadow-sm">
@@ -1567,19 +2295,16 @@ export default function App() {
               </button>
               <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() =>
-                    handleShareOrPdf(
-                      previewTab === 'purchase'
-                        ? 'Objednávka'
-                        : previewTab === 'economy'
-                        ? 'Ekonomika'
-                        : 'Rozpiska řezání'
-                    )
-                  }
-                  className={`h-8 px-3 rounded-lg font-bold text-xs inline-flex items-center gap-1.5 shadow-sm ${pdfBtnColor}`}
+                  disabled={isGeneratingPdf}
+                  onClick={() => handleExportPdf({ mode: 'share', tab: previewTab })}
+                  className={`h-8 px-3 rounded-lg font-bold text-xs inline-flex items-center gap-1.5 shadow-sm disabled:opacity-60 ${pdfBtnColor}`}
                 >
-                  <Send className="w-3.5 h-3.5" />
-                  Odeslat PDF
+                  {isGeneratingPdf ? (
+                    <span className="w-3.5 h-3.5 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5" />
+                  )}
+                  {isGeneratingPdf ? 'Tvořím PDF…' : 'Odeslat PDF'}
                 </button>
                 <button
                   onClick={handlePrintA4}
@@ -1618,6 +2343,15 @@ export default function App() {
                 </button>
               ))}
             </div>
+
+            {errorMsg && (
+              <div className="px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center justify-between gap-2">
+                <span>{errorMsg}</span>
+                <button onClick={() => setErrorMsg('')} className="text-rose-500">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1648,6 +2382,14 @@ export default function App() {
                   >
                     <Download className="w-3.5 h-3.5" />
                     CSV
+                  </button>
+                  <button
+                    disabled={isGeneratingPdf}
+                    onClick={() => handleExportPdf({ mode: 'download', tab: 'purchase' })}
+                    className="h-8 px-2.5 rounded-lg border border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold inline-flex items-center gap-1"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Stáhnout PDF
                   </button>
                 </div>
               </div>
@@ -1730,24 +2472,49 @@ export default function App() {
             </section>
           )}
 
-          {/* 2. ÚSPORNÁ DÍLENSKÁ ROZPISKA (SCHVÁLENÝ ČISTÝ DESIGN) */}
+          {/* 2. ÚSPORNÁ DÍLENSKÁ ROZPISKA (PLNÁ ŠÍŘKA A4 + SKRYTÍ PRÁZDNÝCH SLOUPCŮ) */}
           {showWorkshop && (
             <section
               className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-4 sm:p-6 print:border-0 print:rounded-none print:shadow-none print:p-0 ${
                 showPurchase ? 'print-sheet-break' : ''
               }`}
             >
-              {/* Světlý panel akcí a přepínání řádků (jen na obrazovce, netiskne se) */}
+              {/* Světlý panel akcí (jen na obrazovce, netiskne se) */}
               <div className="mb-4 pb-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 print:hidden">
-                <button
-                  onClick={handlePrintA4}
-                  className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition"
-                >
-                  <Printer className="w-3.5 h-3.5 text-slate-500" />
-                  Tisk A4
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handlePrintA4}
+                    className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-slate-500" />
+                    Tisk A4
+                  </button>
 
-                <div className="flex items-center gap-2">
+                  <div className="inline-flex bg-slate-100 border border-slate-200 p-0.5 rounded-lg">
+                    <button
+                      onClick={() => setPrintOrientation('portrait')}
+                      className={`h-7 px-2.5 rounded-md text-xs font-bold transition ${
+                        printOrientation === 'portrait'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      A4 na výšku
+                    </button>
+                    <button
+                      onClick={() => setPrintOrientation('landscape')}
+                      className={`h-7 px-2.5 rounded-md text-xs font-bold transition ${
+                        printOrientation === 'landscape'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      A4 na šířku
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
                   <div className="inline-flex bg-slate-100 border border-slate-200 p-0.5 rounded-lg">
                     <button
                       onClick={() => setWorkshopRowMode('grouped')}
@@ -1772,22 +2539,23 @@ export default function App() {
                   </div>
 
                   <button
-                    onClick={() => handleShareOrPdf('Rozpiska řezání')}
-                    className="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                    disabled={isGeneratingPdf}
+                    onClick={() => handleExportPdf({ mode: 'download', tab: 'workshop' })}
+                    className="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"
                   >
-                    <Send className="w-3.5 h-3.5" />
-                    Odeslat PDF
+                    <Download className="w-3.5 h-3.5" />
+                    Stáhnout PDF
                   </button>
                 </div>
               </div>
 
               {/* Kompaktní tisková hlavička: jen Rozpiska řezání, Zakázka a Datum */}
-              <div className="flex flex-wrap items-baseline justify-between gap-2 pb-2 mb-2.5 border-b-2 border-slate-900">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 pb-1.5 mb-2 border-b-2 border-slate-900">
                 <div className="flex items-baseline gap-3 flex-wrap">
                   <span className="text-xs font-extrabold uppercase tracking-widest text-slate-600">
                     Rozpiska řezání
                   </span>
-                  <span className="text-xl font-black text-slate-900 tracking-tight">
+                  <span className="text-xl print:text-lg font-black text-slate-900 tracking-tight">
                     {orderNumber}
                   </span>
                 </div>
@@ -1796,9 +2564,9 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Úsporná dílenská tabulka bez barevných ploch a bez lámání písmen */}
+              {/* Úsporná dílenská tabulka přes 100 % šířky bez prázdných sloupců */}
               <div className="overflow-x-auto print:overflow-visible">
-                <table className="w-full border-collapse border-y-2 border-slate-900 text-[13px] bg-white">
+                <table className="print-workshop-table w-full border-collapse border-y-2 border-slate-900 text-[13px] bg-white">
                   <thead>
                     <tr className="border-b-[1.5px] border-slate-900 text-[11px] font-extrabold uppercase tracking-wide text-slate-700 bg-white">
                       <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
@@ -1819,12 +2587,16 @@ export default function App() {
                       <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
                         Mat.
                       </th>
-                      <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
-                        Detail
-                      </th>
-                      <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
-                        Poznámka
-                      </th>
+                      {hasAnyDetail && (
+                        <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
+                          Detail
+                        </th>
+                      )}
+                      {hasAnyNote && (
+                        <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
+                          Poznámka
+                        </th>
+                      )}
                       <th className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
                         Hmotnost
                       </th>
@@ -1863,34 +2635,40 @@ export default function App() {
                           <td className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
                             <span className="font-semibold">{r.profile}</span>
                             <span className="mx-1.5 text-slate-400">–</span>
-                            <span className="font-extrabold text-[14px]">{r.length}</span>
+                            <span className="font-extrabold text-[14px] print:text-[10.5pt]">
+                              {r.length}
+                            </span>
                           </td>
                           <td className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
                             <span
-                              className="inline-block px-1 pb-0.5 text-xs font-extrabold leading-tight"
+                              className="inline-block px-1 pb-0.5 text-xs print:text-[9pt] font-extrabold leading-tight"
                               style={{ borderBottom: `2.5px solid ${mat.printUnderline}` }}
                             >
                               {mat.shortLabel}
                             </span>
                           </td>
-                          <td className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
-                            <div className="inline-flex items-center justify-center gap-1.5">
-                              {r.angleNote && (
-                                <span className="font-bold text-xs min-w-[36px] text-right">
-                                  {r.angleNote}
-                                </span>
-                              )}
-                              <AngleSvgPreview
-                                angleNote={r.angleNote}
-                                showHiddenEdge={r.showHiddenEdge}
-                                profile={r.profile}
-                                lOrient={r.lOrient}
-                              />
-                            </div>
-                          </td>
-                          <td className="py-1.5 px-2 text-xs text-slate-700 border-r border-slate-200 whitespace-nowrap">
-                            {r.note}
-                          </td>
+                          {hasAnyDetail && (
+                            <td className="py-1.5 px-2 text-center border-r border-slate-200 whitespace-nowrap">
+                              <div className="inline-flex items-center justify-center gap-1.5">
+                                {r.angleNote && (
+                                  <span className="font-bold text-xs print:text-[8.5pt] min-w-[34px] text-right">
+                                    {r.angleNote}
+                                  </span>
+                                )}
+                                <AngleSvgPreview
+                                  angleNote={r.angleNote}
+                                  showHiddenEdge={r.showHiddenEdge}
+                                  profile={r.profile}
+                                  lOrient={r.lOrient}
+                                />
+                              </div>
+                            </td>
+                          )}
+                          {hasAnyNote && (
+                            <td className="py-1.5 px-2 text-xs print:text-[8.5pt] text-slate-700 border-r border-slate-200">
+                              {r.note}
+                            </td>
+                          )}
                           <td className="py-1.5 px-2 text-right font-semibold border-r border-slate-200 whitespace-nowrap">
                             {formatKgCz(r.rowKg)} kg
                           </td>
@@ -1904,7 +2682,7 @@ export default function App() {
                                   [r.rowKey]: !prev[r.rowKey],
                                 }))
                               }
-                              className="w-4 h-4 cursor-pointer accent-slate-900"
+                              className="w-4 h-4 print:w-3.5 print:h-3.5 cursor-pointer accent-slate-900"
                             />
                           </td>
                         </tr>
@@ -1923,7 +2701,7 @@ export default function App() {
                         {workshopRows.totalQty}
                       </td>
                       <td
-                        colSpan={4}
+                        colSpan={footerMiddleColSpan}
                         className="py-2 px-2 font-semibold text-slate-600 border-r border-slate-200 whitespace-nowrap"
                       >
                         Délky = vnější rozměr L max
@@ -2033,7 +2811,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 pb-14">
-      {/* Skryté file inputy optimalizované pro PC i Android / iOS */}
       <input
         ref={photoInputRef}
         type="file"
@@ -2107,11 +2884,12 @@ export default function App() {
             </div>
 
             <button
-              onClick={() => handleShareOrPdf('Přehled zakázky')}
-              className="h-8 px-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 shrink-0"
+              disabled={isGeneratingPdf}
+              onClick={() => handleExportPdf({ mode: 'share', tab: 'workshop' })}
+              className="h-8 px-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 shrink-0"
             >
               <Share2 className="w-3.5 h-3.5" />
-              Sdílet
+              {isGeneratingPdf ? 'PDF…' : 'Sdílet PDF'}
             </button>
           </div>
 
